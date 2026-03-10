@@ -1,0 +1,5 @@
+Name,IP
+SRV1,192.168.1.10
+SRV2,192.168.1.11
+SRV3,serveur3.domaine.local
+PC1,192.168.1.20
