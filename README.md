@@ -371,7 +371,6 @@ Server,Port,User,Password
 smtp.gmail.com,587,votre.email@gmail.com,votre_mot_de_passe
 ```
 
-> ⚠️ **Sécurité :** Le mot de passe est stocké en clair. Pour un environnement de production, utilisez des variables d'environnement ou un coffre sécurisé (ex: `Export-Clixml`).
 
 ---
 
