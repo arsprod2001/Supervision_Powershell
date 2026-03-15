@@ -1,4 +1,4 @@
 Metric,Warning,Critical
-CPU,80,90
-Memory,80,90
-Disk,85,95
+Memory,2,2
+Disk,2,2
+CPU,2,2
