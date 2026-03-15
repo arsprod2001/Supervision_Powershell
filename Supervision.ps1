@@ -10,7 +10,7 @@ $fichierRapport     = Join-Path $cheminScript "rapport_supervision.csv"
 $fichierJournal     = Join-Path $cheminScript "journal_execution.log"
 
 # ------------------------------------------------------------
-# Fonctions utilitaires (en français)
+# Fonctions utilitaires 
 # ------------------------------------------------------------
 
 <#
