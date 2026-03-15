@@ -1,61 +1,47 @@
-<#
-.SYNOPSIS
-Script de supervision de la connectivité réseau et des ressources serveur.
-
-.DESCRIPTION
-Ce script vérifie la disponibilité (ping) des serveurs listés, collecte l'utilisation du CPU, de la mémoire et de l'espace disque via PowerShell Remoting, compare aux seuils définis, génère un rapport CSV, envoie un email récapitulatif si des seuils sont dépassés ou des serveurs injoignables, et journalise l'exécution.
-
-.NOTES
-Auteur  : Groupe de 5 personnes
-Version : 1.1 (avec email récapitulatif)
-Date    : 2026-03-15
-#>
-
 # ------------------------------------------------------------
 # Paramètres par défaut (chemins des fichiers de configuration)
 # ------------------------------------------------------------
-$configPath = Split-Path -Parent $MyInvocation.MyCommand.Path
-$serversFile    = Join-Path $configPath "serveurs.csv"          # Liste des serveurs (Name, [IP])
-$thresholdsFile = Join-Path $configPath "seuils.csv"            # Seuils (Metric, Warning, Critical)
-$smtpFile       = Join-Path $configPath "smtp_config.csv"       # Paramètres SMTP (Server, Port, User, Password)
-$recipientsFile = Join-Path $configPath "destinataires.csv"     # Emails (Name, Email)
-
-$reportFile     = Join-Path $configPath "rapport_supervision.csv"
-$logFile        = Join-Path $configPath "journal_execution.log"
+$cheminScript = Split-Path -Parent $MyInvocation.MyCommand.Path
+$fichierServeurs    = Join-Path $cheminScript "serveurs.csv"         
+$fichierSeuils      = Join-Path $cheminScript "seuils.csv"            
+$fichierSmtp        = Join-Path $cheminScript "smtp_config.csv"      
+$fichierDestinataires = Join-Path $cheminScript "destinataires.csv"  
+$fichierRapport     = Join-Path $cheminScript "rapport_supervision.csv"
+$fichierJournal     = Join-Path $cheminScript "journal_execution.log"
 
 # ------------------------------------------------------------
-# Fonctions utilitaires
+# Fonctions utilitaires (en français)
 # ------------------------------------------------------------
 
 <#
 .SYNOPSIS
 Écrit un message dans le journal (console + fichier log).
 #>
-function Write-Log {
+function Ecrire-Journal {
     param(
         [string]$Message,
-        [string]$Level = "INFO"
+        [string]$Niveau = "INFO"
     )
-    $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-    $logEntry = "$timestamp [$Level] $Message"
+    $horodatage = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    $entreeJournal = "$horodatage [$Niveau] $Message"
     # Affichage console
-    Write-Host $logEntry
+    Write-Host $entreeJournal
     # Écriture dans le fichier log
-    Add-Content -Path $logFile -Value $logEntry
+    Add-Content -Path $fichierJournal -Value $entreeJournal
 }
 
 <#
 .SYNOPSIS
 Teste la connectivité réseau d'un serveur par ping.
 #>
-function Test-ServerConnectivity {
-    param([string]$ComputerName)
+function Tester-Connexion {
+    param([string]$NomOrdinateur)
     try {
-        $ping = Test-Connection -ComputerName $ComputerName -Count 1 -Quiet -ErrorAction Stop
+        $ping = Test-Connection -ComputerName $NomOrdinateur -Count 1 -Quiet -ErrorAction Stop
         return $ping
     }
     catch {
-        Write-Log -Message "Erreur ping pour $ComputerName : $_" -Level "WARNING"
+        Ecrire-Journal -Message "Erreur ping pour $NomOrdinateur : $_" -Niveau "WARNING"
         return $false
     }
 }
@@ -63,28 +49,27 @@ function Test-ServerConnectivity {
 <#
 .SYNOPSIS
 Récupère les ressources d'un serveur distant via PowerShell Remoting.
-Utilise les commandes qui ont été validées (Get-Counter, Get-CimInstance).
 #>
-function Get-ServerResources {
-    param([string]$ComputerName)
+function Obtenir-Ressources {
+    param([string]$NomOrdinateur)
     
     try {
-        Write-Log "Collecte des ressources sur $ComputerName..." -Level "DEBUG"
+        Ecrire-Journal "Collecte des ressources sur $NomOrdinateur..." -Niveau "DEBUG"
         
-        # Création d'une session distante (comme dans le cours)
-        $session = New-PSSession -ComputerName $ComputerName -ErrorAction Stop
+        # Création d'une session distante
+        $session = New-PSSession -ComputerName $NomOrdinateur -ErrorAction Stop
         
         $scriptBlock = {
-            $result = [PSCustomObject]@{
+            $resultat = [PSCustomObject]@{
                 CPU    = 0
-                Memory = 0
-                Disk   = 0
+                Memoire = 0
+                Disque  = 0
             }
             
             # CPU via Get-Counter
             try {
-                $cpuCounter = Get-Counter '\Processor(_Total)\% Processor Time' -SampleInterval 1 -MaxSamples 1 -ErrorAction Stop
-                $result.CPU = [math]::Round($cpuCounter.CounterSamples.CookedValue, 2)
+                $compteurCPU = Get-Counter '\Processor(_Total)\% Processor Time' -SampleInterval 1 -MaxSamples 1 -ErrorAction Stop
+                $resultat.CPU = [math]::Round($compteurCPU.CounterSamples.CookedValue, 2)
             }
             catch {
                 Write-Warning "CPU indisponible : $_"
@@ -94,9 +79,9 @@ function Get-ServerResources {
             try {
                 $os = Get-CimInstance -ClassName Win32_OperatingSystem -ErrorAction Stop
                 $total = $os.TotalVisibleMemorySize
-                $free  = $os.FreePhysicalMemory
+                $libre  = $os.FreePhysicalMemory
                 if ($total -gt 0) {
-                    $result.Memory = [math]::Round((($total - $free) / $total) * 100, 2)
+                    $resultat.Memoire = [math]::Round((($total - $libre) / $total) * 100, 2)
                 }
             }
             catch {
@@ -105,19 +90,19 @@ function Get-ServerResources {
             
             # Disque via Get-CimInstance (ou Get-PSDrive en secours)
             try {
-                $disk = Get-CimInstance -ClassName Win32_LogicalDisk -Filter "DeviceID='C:'" -ErrorAction Stop
-                if ($disk -and $disk.Size -gt 0) {
-                    $result.Disk = [math]::Round((($disk.Size - $disk.FreeSpace) / $disk.Size) * 100, 2)
+                $disque = Get-CimInstance -ClassName Win32_LogicalDisk -Filter "DeviceID='C:'" -ErrorAction Stop
+                if ($disque -and $disque.Size -gt 0) {
+                    $resultat.Disque = [math]::Round((($disque.Size - $disque.FreeSpace) / $disque.Size) * 100, 2)
                 }
             }
             catch {
                 # Fallback sur Get-PSDrive
                 try {
-                    $drive = Get-PSDrive -Name C -ErrorAction Stop
-                    if ($drive -and $drive.Used -ne $null) {
-                        $total = $drive.Used + $drive.Free
+                    $lecteur = Get-PSDrive -Name C -ErrorAction Stop
+                    if ($lecteur -and $lecteur.Used -ne $null) {
+                        $total = $lecteur.Used + $lecteur.Free
                         if ($total -gt 0) {
-                            $result.Disk = [math]::Round(($drive.Used / $total) * 100, 2)
+                            $resultat.Disque = [math]::Round(($lecteur.Used / $total) * 100, 2)
                         }
                     }
                 }
@@ -126,57 +111,57 @@ function Get-ServerResources {
                 }
             }
             
-            return $result
+            return $resultat
         }
         
-        $resources = Invoke-Command -Session $session -ScriptBlock $scriptBlock
+        $ressources = Invoke-Command -Session $session -ScriptBlock $scriptBlock
         Remove-PSSession $session
         
-        Write-Log "Valeurs collectées - CPU:$($resources.CPU)%, MEM:$($resources.Memory)%, DISK:$($resources.Disk)%" -Level "DEBUG"
-        return $resources
+        Ecrire-Journal "Valeurs collectées - CPU:$($ressources.CPU)%, MEM:$($ressources.Memoire)%, DISK:$($ressources.Disque)%" -Niveau "DEBUG"
+        return $ressources
     }
     catch {
-        Write-Log "Échec de la collecte des ressources pour $ComputerName : $_" -Level "ERROR"
+        Ecrire-Journal "Échec de la collecte des ressources pour $NomOrdinateur : $_" -Niveau "ERROR"
         return $null
     }
 }
 
 <#
 .SYNOPSIS
-Envoie un email d'alerte via le serveur SMTP configuré (modèle du cours).
+Envoie un email d'alerte via le serveur SMTP configuré.
 #>
-function Send-EmailAlert {
+function Envoyer-AlerteMail {
     param(
-        [string]$Subject,
-        [string]$Body,
-        [string[]]$To
+        [string]$Sujet,
+        [string]$Corps,
+        [string[]]$Destinataires
     )
     try {
-        $smtpConfig = Import-Csv $smtpFile | Select-Object -First 1
+        $configSmtp = Import-Csv $fichierSmtp | Select-Object -First 1
         
-        $smtpServer = $smtpConfig.Server
-        $port       = $smtpConfig.Port
-        $user       = $smtpConfig.User
-        $pass       = $smtpConfig.Password
+        $serveurSmtp = $configSmtp.Server
+        $port        = $configSmtp.Port
+        $utilisateur = $configSmtp.User
+        $motDePasse  = $configSmtp.Password
 
-        $smtpClient = New-Object Net.Mail.SmtpClient($smtpServer, $port)
-        $smtpClient.EnableSsl = $true
-        $smtpClient.Credentials = New-Object System.Net.NetworkCredential($user, $pass)
+        $clientSmtp = New-Object Net.Mail.SmtpClient($serveurSmtp, $port)
+        $clientSmtp.EnableSsl = $true
+        $clientSmtp.Credentials = New-Object System.Net.NetworkCredential($utilisateur, $motDePasse)
 
-        $mail = New-Object Net.Mail.MailMessage
-        $mail.From = $user
-        foreach ($addr in $To) {
-            $mail.To.Add($addr)
+        $message = New-Object Net.Mail.MailMessage
+        $message.From = $utilisateur
+        foreach ($dest in $Destinataires) {
+            $message.To.Add($dest)
         }
-        $mail.Subject = $Subject
-        $mail.Body = $Body
-        $mail.IsBodyHtml = $false
+        $message.Subject = $Sujet
+        $message.Body = $Corps
+        $message.IsBodyHtml = $false
 
-        $smtpClient.Send($mail)
-        Write-Log -Message "Alerte email envoyée à $($To -join ', ')" -Level "INFO"
+        $clientSmtp.Send($message)
+        Ecrire-Journal -Message "Alerte email envoyée à $($Destinataires -join ', ')" -Niveau "INFO"
     }
     catch {
-        Write-Log -Message "Erreur lors de l'envoi de l'email : $_" -Level "ERROR"
+        Ecrire-Journal -Message "Erreur lors de l'envoi de l'email : $_" -Niveau "ERROR"
     }
 }
 
@@ -184,14 +169,14 @@ function Send-EmailAlert {
 .SYNOPSIS
 Vérifie si une valeur dépasse les seuils et retourne le niveau (OK, WARNING, CRITICAL).
 #>
-function Get-ThresholdLevel {
+function Obtenir-NiveauSeuil {
     param(
-        [double]$Value,
-        [double]$Warning,
-        [double]$Critical
+        [double]$Valeur,
+        [double]$SeuilAvertissement,
+        [double]$SeuilCritique
     )
-    if ($Value -ge $Critical) { return "CRITICAL" }
-    elseif ($Value -ge $Warning) { return "WARNING" }
+    if ($Valeur -ge $SeuilCritique) { return "CRITICAL" }
+    elseif ($Valeur -ge $SeuilAvertissement) { return "WARNING" }
     else { return "OK" }
 }
 
@@ -199,49 +184,49 @@ function Get-ThresholdLevel {
 .SYNOPSIS
 Exporte les résultats dans un fichier CSV.
 #>
-function Export-Report {
-    param([array]$Results)
-    $Results | Export-Csv -Path $reportFile -NoTypeInformation -Encoding UTF8
-    Write-Log -Message "Rapport généré : $reportFile" -Level "INFO"
+function Exporter-Rapport {
+    param([array]$Resultats)
+    $Resultats | Export-Csv -Path $fichierRapport -NoTypeInformation -Encoding UTF8
+    Ecrire-Journal -Message "Rapport généré : $fichierRapport" -Niveau "INFO"
 }
 
 # ------------------------------------------------------------
 # Chargement des données d'entrée
 # ------------------------------------------------------------
-Write-Log "Début de la supervision"
+Ecrire-Journal "Début de la supervision"
 
 # Vérification de l'existence des fichiers
-$requiredFiles = @($serversFile, $thresholdsFile, $smtpFile, $recipientsFile)
-foreach ($file in $requiredFiles) {
-    if (-not (Test-Path $file)) {
-        Write-Log "Fichier manquant : $file" -Level "ERROR"
+$fichiersRequis = @($fichierServeurs, $fichierSeuils, $fichierSmtp, $fichierDestinataires)
+foreach ($fichier in $fichiersRequis) {
+    if (-not (Test-Path $fichier)) {
+        Ecrire-Journal "Fichier manquant : $fichier" -Niveau "ERROR"
         exit 1
     }
 }
 
 # Import des listes
-$servers    = Import-Csv $serversFile      # Colonnes : Name (et éventuellement IP)
-$thresholds = Import-Csv $thresholdsFile   # Colonnes : Metric, Warning, Critical
-$recipients = Import-Csv $recipientsFile   # Colonnes : Name, Email
+$serveurs    = Import-Csv $fichierServeurs      
+$seuils      = Import-Csv $fichierSeuils        
+$destinataires = Import-Csv $fichierDestinataires 
 
-Write-Log "$($servers.Count) serveurs chargés" -Level "INFO"
-Write-Log "$($thresholds.Count) seuils chargés" -Level "INFO"
-Write-Log "$($recipients.Count) destinataires chargés" -Level "INFO"
+Ecrire-Journal "$($serveurs.Count) serveurs chargés" -Niveau "INFO"
+Ecrire-Journal "$($seuils.Count) seuils chargés" -Niveau "INFO"
+Ecrire-Journal "$($destinataires.Count) destinataires chargés" -Niveau "INFO"
 
 # Construction d'une table de seuils pour un accès facile
-$thresholdTable = @{}
-foreach ($t in $thresholds) {
-    $thresholdTable[$t.Metric] = @{
-        Warning  = [double]$t.Warning
-        Critical = [double]$t.Critical
+$tableSeuils = @{}
+foreach ($s in $seuils) {
+    $tableSeuils[$s.Metric] = @{
+        Avertissement = [double]$s.Warning
+        Critique      = [double]$s.Critical
     }
 }
 
 # Vérification que les seuils requis sont présents
-$requiredMetrics = @("CPU", "Memory", "Disk")
-foreach ($metric in $requiredMetrics) {
-    if (-not $thresholdTable.ContainsKey($metric)) {
-        Write-Log "Seuil manquant pour $metric dans $thresholdsFile" -Level "ERROR"
+$metriquesRequises = @("CPU", "Memory", "Disk")
+foreach ($metrique in $metriquesRequises) {
+    if (-not $tableSeuils.ContainsKey($metrique)) {
+        Ecrire-Journal "Seuil manquant pour $metrique dans $fichierSeuils" -Niveau "ERROR"
         exit 1
     }
 }
@@ -249,103 +234,114 @@ foreach ($metric in $requiredMetrics) {
 # ------------------------------------------------------------
 # Boucle principale de supervision
 # ------------------------------------------------------------
-$results = @()
-$globalAlertMessages = @()  # Pour accumuler les messages d'alerte
+$resultats = @()
+$alertesParServeur = @{} 
 
-foreach ($server in $servers) {
-    # Utilisation du nom (ou IP si fournie)
-    $computerName = if ($server.IP) { $server.IP } else { $server.Name }
-    Write-Log "Traitement du serveur : $computerName"
+foreach ($serveur in $serveurs) {
+    $nomServeur = $serveur.Name
+    Ecrire-Journal "Traitement du serveur : $nomServeur"
 
     # 1. Test de connectivité
-    $pingOk = Test-ServerConnectivity -ComputerName $computerName
-    $status = if ($pingOk) { "OK" } else { "INJOIGNABLE" }
+    $pingOk = Tester-Connexion -NomOrdinateur $nomServeur
+    $statut = if ($pingOk) { "OK" } else { "INJOIGNABLE" }
 
     # Initialisation des métriques
-    $cpu = $mem = $disk = $null
-    $cpuLevel = $memLevel = $diskLevel = "N/A"
+    $cpu = $memoire = $disque = $null
+    $niveauCPU = $niveauMemoire = $niveauDisque = "N/A"
 
     if ($pingOk) {
         # 2. Collecte des ressources
-        $resources = Get-ServerResources -ComputerName $computerName
+        $ressources = Obtenir-Ressources -NomOrdinateur $nomServeur
         
-        if ($resources) {
-            $cpu  = $resources.CPU
-            $mem  = $resources.Memory
-            $disk = $resources.Disk
+        if ($ressources) {
+            $cpu      = $ressources.CPU
+            $memoire  = $ressources.Memoire
+            $disque   = $ressources.Disque
 
             # 3. Comparaison aux seuils
-            $cpuLevel  = Get-ThresholdLevel -Value $cpu  -Warning $thresholdTable["CPU"].Warning  -Critical $thresholdTable["CPU"].Critical
-            $memLevel  = Get-ThresholdLevel -Value $mem  -Warning $thresholdTable["Memory"].Warning -Critical $thresholdTable["Memory"].Critical
-            $diskLevel = Get-ThresholdLevel -Value $disk -Warning $thresholdTable["Disk"].Warning  -Critical $thresholdTable["Disk"].Critical
+            $niveauCPU     = Obtenir-NiveauSeuil -Valeur $cpu -SeuilAvertissement $tableSeuils["CPU"].Avertissement -SeuilCritique $tableSeuils["CPU"].Critique
+            $niveauMemoire = Obtenir-NiveauSeuil -Valeur $memoire -SeuilAvertissement $tableSeuils["Memory"].Avertissement -SeuilCritique $tableSeuils["Memory"].Critique
+            $niveauDisque  = Obtenir-NiveauSeuil -Valeur $disque -SeuilAvertissement $tableSeuils["Disk"].Avertissement -SeuilCritique $tableSeuils["Disk"].Critique
         }
         else {
-            $status = "ERREUR_COLLECTE"
-            Write-Log "Échec de collecte des ressources pour $computerName" -Level "WARNING"
+            $statut = "ERREUR_COLLECTE"
+            Ecrire-Journal "Échec de collecte des ressources pour $nomServeur" -Niveau "WARNING"
         }
     }
 
     # 4. Stockage du résultat
-    $result = [PSCustomObject]@{
-        Server        = $computerName
-        Status        = $status
-        CPU           = if ($cpu -ne $null) { "$cpu%" } else { "-" }
-        Memory        = if ($mem -ne $null) { "$mem%" } else { "-" }
-        Disk          = if ($disk -ne $null) { "$disk%" } else { "-" }
-        CPU_Level     = $cpuLevel
-        Memory_Level  = $memLevel
-        Disk_Level    = $diskLevel
-        Timestamp     = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    $resultat = [PSCustomObject]@{
+        Serveur        = $nomServeur
+        Statut         = $statut
+        CPU            = if ($cpu -ne $null) { "$cpu%" } else { "-" }
+        Memoire        = if ($memoire -ne $null) { "$memoire%" } else { "-" }
+        Disque         = if ($disque -ne $null) { "$disque%" } else { "-" }
+        Niveau_CPU     = $niveauCPU
+        Niveau_Memoire = $niveauMemoire
+        Niveau_Disque  = $niveauDisque
+        Horodatage     = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
     }
-    $results += $result
+    $resultats += $resultat
 
-    # 5. Collecte des messages d'alerte pour ce serveur
-    $serverAlertMessages = @()
-    if ($status -eq "INJOIGNABLE") {
-        $serverAlertMessages += "❌ Serveur $computerName injoignable (ping)."
+    # 5. Collecte des messages d'alerte pour ce serveur (sans icônes)
+    $messagesServeur = @()
+    if ($statut -eq "INJOIGNABLE") {
+        $messagesServeur += "Serveur $nomServeur injoignable (ping)."
     }
-    elseif ($status -eq "ERREUR_COLLECTE") {
-        $serverAlertMessages += "❌ Impossible de collecter les ressources sur $computerName."
+    elseif ($statut -eq "ERREUR_COLLECTE") {
+        $messagesServeur += "Impossible de collecter les ressources sur $nomServeur."
     }
     else {
-        if ($cpuLevel -eq "CRITICAL")  { $serverAlertMessages += "🚨 CPU CRITIQUE sur $computerName : $cpu% (seuil critique : $($thresholdTable['CPU'].Critical)%)" }
-        if ($cpuLevel -eq "WARNING")   { $serverAlertMessages += "⚠️ CPU en WARNING sur $computerName : $cpu% (seuil avertissement : $($thresholdTable['CPU'].Warning)%)" }
-        if ($memLevel -eq "CRITICAL")  { $serverAlertMessages += "🚨 Mémoire CRITIQUE sur $computerName : $mem% (seuil critique : $($thresholdTable['Memory'].Critical)%)" }
-        if ($memLevel -eq "WARNING")   { $serverAlertMessages += "⚠️ Mémoire en WARNING sur $computerName : $mem% (seuil avertissement : $($thresholdTable['Memory'].Warning)%)" }
-        if ($diskLevel -eq "CRITICAL") { $serverAlertMessages += "🚨 Disque CRITIQUE sur $computerName : $disk% (seuil critique : $($thresholdTable['Disk'].Critical)%)" }
-        if ($diskLevel -eq "WARNING")  { $serverAlertMessages += "⚠️ Disque en WARNING sur $computerName : $disk% (seuil avertissement : $($thresholdTable['Disk'].Warning)%)" }
+        if ($niveauCPU -eq "CRITICAL")  { $messagesServeur += "CPU CRITIQUE : $cpu% (seuil critique : $($tableSeuils['CPU'].Critique)%)" }
+        if ($niveauCPU -eq "WARNING")   { $messagesServeur += "CPU en WARNING : $cpu% (seuil avertissement : $($tableSeuils['CPU'].Avertissement)%)" }
+        if ($niveauMemoire -eq "CRITICAL")  { $messagesServeur += "Mémoire CRITIQUE : $memoire% (seuil critique : $($tableSeuils['Memory'].Critique)%)" }
+        if ($niveauMemoire -eq "WARNING")   { $messagesServeur += "Mémoire en WARNING : $memoire% (seuil avertissement : $($tableSeuils['Memory'].Avertissement)%)" }
+        if ($niveauDisque -eq "CRITICAL") { $messagesServeur += "Disque CRITIQUE : $disque% (seuil critique : $($tableSeuils['Disk'].Critique)%)" }
+        if ($niveauDisque -eq "WARNING")  { $messagesServeur += "Disque en WARNING : $disque% (seuil avertissement : $($tableSeuils['Disk'].Avertissement)%)" }
     }
 
-    # Ajouter les messages de ce serveur au global
-    if ($serverAlertMessages.Count -gt 0) {
-        $globalAlertMessages += $serverAlertMessages
+    # Ajouter les messages de ce serveur au dictionnaire global
+    if ($messagesServeur.Count -gt 0) {
+        $alertesParServeur[$nomServeur] = $messagesServeur
     }
 }
 
 # ------------------------------------------------------------
 # Envoi d'un email récapitulatif si des alertes ont été générées
 # ------------------------------------------------------------
-if ($globalAlertMessages.Count -gt 0) {
-    $subject = "ALERTE Supervision - Récapitulatif du $(Get-Date -Format 'yyyy-MM-dd HH:mm')"
-    $body = "Rapport de supervision du $(Get-Date -Format 'dd/MM/yyyy HH:mm:ss')`r`n"
-    $body += "=" * 50 + "`r`n"
-    $body += ($globalAlertMessages -join "`r`n`r`n")
-    $body += "`r`n" + "=" * 50 + "`r`n"
-    $body += "Nombre total de serveurs supervisés : $($results.Count)`r`n"
-    $okCount = ($results | Where-Object { $_.Status -eq "OK" }).Count
-    $body += "Serveurs OK : $okCount`r`n"
-    $body += "Serveurs avec alertes : $($globalAlertMessages.Count)`r`n"
-    
-    Send-EmailAlert -Subject $subject -Body $body -To $recipients.Email
+if ($alertesParServeur.Count -gt 0) {
+    $sujet = "ALERTE Supervision - Récapitulatif du $(Get-Date -Format 'yyyy-MM-dd HH:mm')"
+    $corps = "Rapport de supervision du $(Get-Date -Format 'dd/MM/yyyy HH:mm:ss')`r`n"
+    $corps += "=" * 50 + "`r`n"
+
+    # Tri des serveurs par nom pour un affichage ordonné
+    foreach ($nom in ($alertesParServeur.Keys | Sort-Object)) {
+        $corps += "Serveur $nom :`r`n"
+        foreach ($msg in $alertesParServeur[$nom]) {
+            $corps += "  - $msg`r`n"
+        }
+    }
+
+    $corps += "=" * 50 + "`r`n"
+    $corps += "Nombre total de serveurs supervisés : $($resultats.Count)`r`n"
+    $nbOK = ($resultats | Where-Object { $_.Statut -eq "OK" }).Count
+    $corps += "Serveurs OK : $nbOK`r`n"
+
+    # Calcul du nombre total d'alertes (somme des messages de chaque serveur)
+    $nbAlertes = ($alertesParServeur.Values | ForEach-Object { $_.Count }) | Measure-Object -Sum | Select-Object -ExpandProperty Sum
+    $corps += "Serveurs avec alertes : $nbAlertes`r`n"  
+
+    Envoyer-AlerteMail -Sujet $sujet -Corps $corps -Destinataires $destinataires.Email
 }
 else {
-    Write-Log "Aucune alerte détectée, pas d'envoi d'email." -Level "INFO"
+    Ecrire-Journal "Aucune alerte détectée, pas d'envoi d'email." -Niveau "INFO"
 }
 
 # ------------------------------------------------------------
 # Génération du rapport final
 # ------------------------------------------------------------
-Export-Report -Results $results
+Exporter-Rapport -Resultats $resultats
 
-$totalCount = $results.Count
-Write-Log "Supervision terminée - $okCount serveurs OK sur $totalCount"
+$total = $resultats.Count
+$nbOK = ($resultats | Where-Object { $_.Statut -eq "OK" }).Count
+Ecrire-Journal "Supervision terminée - $nbOK serveurs OK sur $total"
